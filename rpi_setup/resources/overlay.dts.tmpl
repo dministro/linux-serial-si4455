@@ -1,0 +1,50 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+        compatible = "brcm,bcm2835", "brcm,bcm2836", "brcm,bcm2708", "brcm,bcm2709";
+        /* disable spi-dev for spi_OL_BUS_._OL_DEV_ */
+        fragment@0 {
+                target = <&spi_OL_BUS_>;
+                __overlay__ {
+                        status = "okay";
+                        spidev@_OL_DEV_{
+                                status = "disabled";
+                        };
+                };
+        };
+
+        fragment@1 {
+                target = <&gpio>;
+                __overlay__ {
+                        si4455__OL_BUS___OL_DEV__pins: si4455__OL_BUS___OL_DEV__pins {
+                                brcm,pins = <_OL_IRQ_ _OL_SDN_>; /* irq sdn */
+                                brcm,function = <0 1>; /* input output */
+                        };
+                };
+        };
+
+        fragment@2 {
+                target = <&spi_OL_BUS_>;
+                frag1: __overlay__ {
+                        #address-cells = <1>;
+                        #size-cells = <0>;
+                        status = "okay";
+
+                        si4455__OL_BUS___OL_DEV_: si4455@_OL_DEV_ {
+                                compatible = "silabs,si4455";
+                                reg = <_OL_DEV_>; // spidev_OL_BUS_._OL_DEV_
+                                interrupt-parent = <&gpio>;/**/
+                                interrupts = <_OL_IRQ_ 0x2>; /* GPIO and falling edge */
+                                shutdown-gpios = <&gpio _OL_SDN_ 1>;
+                                status = "okay";
+                                spi-max-frequency = <100000>;
+                                silabs,package-size = <_OL_PACKAGE_SIZE_>;
+                                silabs,tx-channel = <_OL_TX_CHANNEL_>;
+                                silabs,rx-channel = <_OL_RX_CHANNEL_>;
+                                silabs,tx-timeout = <_OL_TX_TIMEOUT_>;
+                                firmware-name = "_OL_FW_NAME_";
+                        };
+                };
+        };
+};
