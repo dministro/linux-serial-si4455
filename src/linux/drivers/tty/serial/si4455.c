@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 József Horváth <info@ministro.hu>
+ * Copyright (C) 2020 Jozsef Horvath <info@ministro.hu>
  *
  */
 #include <linux/bitops.h>
@@ -22,14 +22,10 @@
 #include <linux/string.h>
 #include <linux/firmware.h>
 #include <linux/timer.h>
-#ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
-#endif
 
-#define PORT_SI4455						1096
 #define SI4455_NAME						"Si4455"
-#define SI4455_MAJOR						432
-#define SI4455_MINOR						567
+#define SI4455_DEV_NAME						"ttySL"
 #define SI4455_UART_NRMAX					16
 #define SI4455_FIFO_SIZE					64
 
@@ -112,9 +108,7 @@ struct si4455_fifo_info {
 
 struct si4455_port {
 	struct uart_port port;
-#ifdef CONFIG_DEBUG_FS
 	struct dentry *dbgfs_dir;
-#endif
 	struct work_struct tx_work;
 	struct work_struct tx_wd_work;
 	struct work_struct cts_wd_work;
@@ -140,18 +134,14 @@ struct si4455_port {
 	bool cts_error;
 	bool tx_pending;
 	bool rx_pending;
+	bool tx_stopped;
+	bool rx_stopped;
 };
 
 static struct uart_driver si4455_uart = {
 	.owner			= THIS_MODULE,
 	.driver_name		= SI4455_NAME,
-#ifdef CONFIG_DEVFS_FS
-	.dev_name		= "ttySI%d",
-#else
-	.dev_name		= "ttySI",
-#endif
-	.major			= SI4455_MAJOR,
-	.minor			= SI4455_MINOR,
+	.dev_name		= SI4455_DEV_NAME,
 	.nr			= SI4455_UART_NRMAX,
 };
 
@@ -331,7 +321,6 @@ static int si4455_s_power(struct device *dev, bool on)
 {
 	struct si4455_port *s = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "%s(on=%d)\n", __func__, on);
 	if (s->power_count == !on)
 		si4455_set_power(s, on);
 	s->power_count += on ? 1 : -1;
@@ -512,7 +501,6 @@ static int si4455_change_state(struct uart_port *port, u8 next_state1)
 {
 	u8 data_out[SI4455_CMD_ARG_COUNT_CHANGE_STATE];
 
-	dev_dbg(port->dev, "%s(%u)\n", __func__, next_state1);
 	data_out[0] = SI4455_CMD_ID_CHANGE_STATE;
 	data_out[1] = (u8)next_state1;
 
@@ -527,7 +515,6 @@ static int si4455_begin_tx(struct uart_port *port, u32 channel, int length,
 	struct si4455_int_status int_status = { 0 };
 	struct si4455_fifo_info fifo_info = { 0 };
 
-	dev_dbg(port->dev, "%s(%u, %u)\n", __func__, channel, length);
 	if (length > SI4455_FIFO_SIZE || length < 0)
 		return -EINVAL;
 
@@ -559,7 +546,6 @@ static int si4455_begin_tx(struct uart_port *port, u32 channel, int length,
 			__func__, ret);
 		return ret;
 	}
-	dev_dbg(port->dev, "%s(): end\n", __func__);
 
 	return 0;
 }
@@ -569,24 +555,23 @@ static int si4455_end_tx(struct uart_port *port)
 	int ret = 0;
 	struct si4455_int_status int_status = { 0 };
 
-	dev_dbg(port->dev, "%s()\n", __func__);
 	ret = si4455_get_int_status(port, 0, 0, 0, &int_status);
 	if (ret) {
 		dev_err(port->dev, "%s: si4455_get_int_status error (%i)\n",
 			__func__, ret);
 		return ret;
 	}
-	dev_dbg(port->dev, "%s(): end\n", __func__);
+
 	return 0;
 }
 
 static int si4455_begin_rx(struct uart_port *port, u32 channel, u32 length)
 {
+	struct si4455_port *s = dev_get_drvdata(port->dev);
 	int ret = 0;
 	struct si4455_int_status int_status = { 0 };
 	struct si4455_fifo_info fifo_info = { 0 };
 
-	dev_dbg(port->dev, "%s(%u, %u)\n", __func__, channel, length);
 	ret = si4455_get_int_status(port, 0, 0, 0, &int_status);
 	if (ret) {
 		dev_err(port->dev, "%s: si4455_get_int_status error (%i)\n",
@@ -602,6 +587,9 @@ static int si4455_begin_rx(struct uart_port *port, u32 channel, u32 length)
 		return ret;
 	}
 
+	if (s->rx_stopped)
+		return 0;
+
 	ret = si4455_rx(port, channel, 0x00, length,
 			SI4455_CMD_START_RX_RXTIMEOUT_STATE_RX,
 			SI4455_CMD_START_RX_RXVALID_STATE_RX,
@@ -611,7 +599,6 @@ static int si4455_begin_rx(struct uart_port *port, u32 channel, u32 length)
 			__func__, ret);
 		return ret;
 	}
-	dev_dbg(port->dev, "%s(): end\n", __func__);
 
 	return 0;
 }
@@ -751,7 +738,9 @@ static int si4455_start_tx_xmit(struct uart_port *port)
 	u8 *payload;
 	u32 max_length;
 
-	dev_dbg(port->dev, "%s()\n", __func__);
+	if (s->tx_stopped)
+		return 0;
+
 	tx_pending = uart_circ_chars_pending(xmit);
 	if (tx_pending == 0 || tx_pending < s->package_size)
 		return 0;
@@ -792,7 +781,6 @@ static int si4455_start_tx_xmit(struct uart_port *port)
 	}
 
 	kfree(data);
-	dev_dbg(port->dev, "%s(): end\n", __func__);
 
 	return ret;
 }
@@ -802,7 +790,6 @@ static int si4455_cancel_tx(struct uart_port *port)
 	int ret = 0;
 	struct si4455_port *s = dev_get_drvdata(port->dev);
 
-	dev_dbg(port->dev, "%s()\n", __func__);
 	if (s->tx_pending) {
 		si4455_end_tx(port);
 		s->tx_pending = false;
@@ -810,7 +797,6 @@ static int si4455_cancel_tx(struct uart_port *port)
 		uart_handle_cts_change(&s->port, TIOCM_CTS);
 		ret = si4455_change_state(port, SI4455_CMD_CHANGE_STATE_STATE_SLEEP);
 	}
-	dev_dbg(port->dev, "%s(): end\n", __func__);
 	return ret;
 }
 
@@ -821,8 +807,6 @@ static int si4455_do_work(struct uart_port *port)
 	struct circ_buf *xmit = &port->state->xmit;
 
 	mutex_lock(&s->mutex);
-	dev_dbg(port->dev, "%s(connected=%i, configured=%i, power_count=%i)\n",
-		__func__, s->connected, s->configured, s->power_count);
 	if (!s->suspended && s->connected && s->configured && s->power_count > 0) {
 		if (!(uart_circ_empty(xmit) || uart_tx_stopped(port) || s->tx_pending))
 			ret = si4455_start_tx_xmit(port);
@@ -830,8 +814,6 @@ static int si4455_do_work(struct uart_port *port)
 		if (!ret && !s->tx_pending)
 			ret = si4455_begin_rx(port, s->rx_channel, s->package_size);
 	}
-	dev_dbg(port->dev, "%s(connected=%i, configured=%i, power_count=%i): end\n",
-		__func__, s->connected, s->configured, s->power_count);
 	mutex_unlock(&s->mutex);
 	return ret;
 }
@@ -844,7 +826,6 @@ static void si4455_handle_rx_pend(struct si4455_port *s, struct si4455_fifo_info
 	int i = 0;
 	u32 length;
 
-	dev_dbg(port->dev, "%s()\n", __func__);
 	length = (s->package_size == 0) ? fifo_info->rx_fifo_count : s->package_size;
 
 	data = kzalloc(length, GFP_KERNEL);
@@ -856,14 +837,15 @@ static void si4455_handle_rx_pend(struct si4455_port *s, struct si4455_fifo_info
 		dev_err(port->dev, "%s: si4455_end_rx error (%i)\n",
 			__func__, sret);
 	} else {
-		for (i = 0; i < length; i++) {
-			uart_insert_char(port, 0, 0, data[i], TTY_NORMAL);
-			port->icount.rx++;
+		if (!s->rx_stopped) {
+			for (i = 0; i < length; i++) {
+				uart_insert_char(port, 0, 0, data[i], TTY_NORMAL);
+				port->icount.rx++;
+			}
+			tty_flip_buffer_push(&port->state->port);
 		}
-		tty_flip_buffer_push(&port->state->port);
 	}
 	kfree(data);
-	dev_dbg(port->dev, "%s(): end\n", __func__);
 }
 
 static void si4455_handle_tx_pend(struct si4455_port *s)
@@ -872,7 +854,6 @@ static void si4455_handle_tx_pend(struct si4455_port *s)
 	struct circ_buf *xmit = &port->state->xmit;
 	u32 sent;
 
-	dev_dbg(port->dev, "%s()\n", __func__);
 	if (s->tx_pending) {
 		sent = (s->package_size == 0) ? s->tx_pending_size
 			: s->package_size;
@@ -883,7 +864,6 @@ static void si4455_handle_tx_pend(struct si4455_port *s)
 		s->tx_pending_size = 0;
 		uart_handle_cts_change(&s->port, TIOCM_CTS);
 	}
-	dev_dbg(port->dev, "%s(): end\n", __func__);
 }
 
 static irqreturn_t si4455_ist(int irq, void *dev_id)
@@ -950,7 +930,6 @@ static void si4455_tx_wd_event(struct timer_list *t)
 {
 	struct si4455_port *s = from_timer(s, t, tx_wd_timer);
 
-	dev_dbg(s->port.dev, "%s\n", __func__);
 	if (s->tx_pending)
 		schedule_work(&s->tx_wd_work);
 }
@@ -960,7 +939,6 @@ static void si4455_tx_wd_proc(struct work_struct *ws)
 	struct si4455_port *s = container_of(ws, struct si4455_port, tx_wd_work);
 	bool have_to_work = false;
 
-	dev_dbg(s->port.dev, "%s\n", __func__);
 	mutex_lock(&s->mutex);
 	if (s->connected && s->tx_pending) {
 		si4455_cancel_tx(&s->port);
@@ -974,8 +952,6 @@ static void si4455_tx_wd_proc(struct work_struct *ws)
 
 	if (have_to_work)
 		si4455_do_work(&s->port);
-
-	dev_dbg(s->port.dev, "%s: end\n", __func__);
 }
 
 static void si4455_cts_wd_event(struct timer_list *t)
@@ -995,7 +971,6 @@ static void si4455_cts_wd_proc(struct work_struct *ws)
 	bool have_to_work = false;
 	int ret;
 
-	dev_dbg(s->port.dev, "%s\n", __func__);
 	mutex_lock(&s->mutex);
 	if (s->cts_error) {
 		dev_err(s->port.dev, "%s: interface recovery\n", __func__);
@@ -1020,8 +995,6 @@ static void si4455_cts_wd_proc(struct work_struct *ws)
 
 	if (have_to_work)
 		si4455_do_work(&s->port);
-
-	dev_dbg(s->port.dev, "%s: end\n", __func__);
 }
 
 static void si4455_tx_proc(struct work_struct *ws)
@@ -1056,13 +1029,11 @@ static unsigned int si4455_get_mctrl(struct uart_port *port)
 
 static void si4455_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
-	dev_dbg(port->dev, "%s\n", __func__);
 }
 
 static void si4455_set_termios(struct uart_port *port, struct ktermios *termios,
 			       struct ktermios *old)
 {
-	dev_dbg(port->dev, "%s\n", __func__);
 	dev_dbg(port->dev, "termios->c_iflag = 0x%x", termios->c_iflag);
 	dev_dbg(port->dev, "termios->c_oflag = 0x%x", termios->c_oflag);
 	dev_dbg(port->dev, "termios->c_cflag = 0x%x", termios->c_cflag);
@@ -1077,9 +1048,10 @@ static int si4455_startup(struct uart_port *port)
 {
 	struct si4455_port *s = dev_get_drvdata(port->dev);
 
-	dev_dbg(port->dev, "%s\n", __func__);
 	mutex_lock(&s->mutex);
 	s->tx_pending = false;
+	s->tx_stopped = false;
+	s->rx_stopped = false;
 	s->connected = true;
 	mod_timer(&s->cts_wd_timer, jiffies + msecs_to_jiffies(100));
 	mutex_unlock(&s->mutex);
@@ -1090,7 +1062,6 @@ static void si4455_shutdown(struct uart_port *port)
 {
 	struct si4455_port *s = dev_get_drvdata(port->dev);
 
-	dev_dbg(port->dev, "%s\n", __func__);
 	mutex_lock(&s->mutex);
 	del_timer_sync(&s->tx_wd_timer);
 	del_timer_sync(&s->cts_wd_timer);
@@ -1115,7 +1086,6 @@ static const char *si4455_type(struct uart_port *port)
 
 static void si4455_config_port(struct uart_port *port, int flags)
 {
-	dev_dbg(port->dev, "%s\n", __func__);
 	if (flags & UART_CONFIG_TYPE)
 		port->type = PORT_SI4455;
 }
@@ -1135,118 +1105,94 @@ static void si4455_start_tx(struct uart_port *port)
 {
 	struct si4455_port *s = container_of(port, struct si4455_port, port);
 
-	dev_dbg(port->dev, "%s\n", __func__);
-
+	s->tx_stopped = false;
 	schedule_work(&s->tx_work);
 }
 
-static void si4455_null_void(struct uart_port *port)
+static void si4455_stop_tx(struct uart_port *port)
 {
-	/* Do nothing */
+	struct si4455_port *s = container_of(port, struct si4455_port, port);
+
+	s->tx_stopped = true;
+}
+
+static void si4455_stop_rx(struct uart_port *port)
+{
+	struct si4455_port *s = container_of(port, struct si4455_port, port);
+
+	mutex_lock(&s->mutex);
+	s->rx_stopped = true;
+	si4455_change_state(&s->port, SI4455_CMD_CHANGE_STATE_STATE_SLEEP);
+	mutex_unlock(&s->mutex);
 }
 
 static const struct uart_ops si4455_ops = {
 	.tx_empty		= si4455_tx_empty,
-	.set_mctrl		= si4455_set_mctrl,/* required */
+	/*
+	 * set_mctrl: required by serial_core, but not used
+	 */
+	.set_mctrl		= si4455_set_mctrl,
 	.get_mctrl		= si4455_get_mctrl,
-	.stop_tx		= si4455_null_void,
+	.stop_tx		= si4455_stop_tx,
 	.start_tx		= si4455_start_tx,
-	.stop_rx		= si4455_null_void,
+	.stop_rx		= si4455_stop_rx,
 	.startup		= si4455_startup,
 	.shutdown		= si4455_shutdown,
-	.set_termios		= si4455_set_termios,/* required */
+	.set_termios		= si4455_set_termios,
 	.type			= si4455_type,
-	.release_port		= si4455_null_void,
 	.config_port		= si4455_config_port,
 	.verify_port		= si4455_verify_port,
 };
 
-#ifdef CONFIG_DEBUG_FS
-static int si4455_debugfs_init(struct device *dev)
+static void si4455_debugfs_init(struct device *dev)
 {
 	struct si4455_port *s = dev_get_drvdata(dev);
 	struct dentry *dbgfs_si_dir;
 	struct dentry *dbgfs_partinfo_dir;
-	struct dentry *dbgfs_entry;
 
 	s->dbgfs_dir = debugfs_create_dir(dev_name(dev), NULL);
-	if (IS_ERR(s->dbgfs_dir))
-		return PTR_ERR(s->dbgfs_dir);
 
 	dbgfs_si_dir = debugfs_create_dir("si4455", s->dbgfs_dir);
-	if (IS_ERR(dbgfs_si_dir))
-		return PTR_ERR(dbgfs_si_dir);
 
-	dbgfs_entry = debugfs_create_u32("cts_error_count", 0444,
-					 dbgfs_si_dir, &s->cts_error_count);
-	if (IS_ERR(dbgfs_entry))
-		return PTR_ERR(dbgfs_entry);
+	debugfs_create_u32("cts_error_count", 0444, dbgfs_si_dir,
+			   &s->cts_error_count);
 
-	dbgfs_entry = debugfs_create_u32("tx_error_count", 0444,
-					 dbgfs_si_dir, &s->tx_error_count);
-	if (IS_ERR(dbgfs_entry))
-		return PTR_ERR(dbgfs_entry);
+	debugfs_create_u32("tx_error_count", 0444, dbgfs_si_dir,
+			   &s->tx_error_count);
 
 	dbgfs_partinfo_dir = debugfs_create_dir("partinfo", dbgfs_si_dir);
-	if (IS_ERR(dbgfs_partinfo_dir))
-		return PTR_ERR(dbgfs_partinfo_dir);
 
-	dbgfs_entry = debugfs_create_u8("chip_rev", 0444,
-					dbgfs_partinfo_dir,
-					&s->part_info.chip_rev);
-	if (IS_ERR(dbgfs_entry))
-		return PTR_ERR(dbgfs_entry);
+	debugfs_create_u8("chip_rev", 0444, dbgfs_partinfo_dir,
+			  &s->part_info.chip_rev);
 
-	dbgfs_entry = debugfs_create_u8("rom_id", 0444,
-					dbgfs_partinfo_dir,
-					&s->part_info.rom_id);
-	if (IS_ERR(dbgfs_entry))
-		return PTR_ERR(dbgfs_entry);
+	debugfs_create_u8("rom_id", 0444, dbgfs_partinfo_dir,
+			  &s->part_info.rom_id);
 
-	dbgfs_entry = debugfs_create_u16("part", 0444,
-					 dbgfs_partinfo_dir,
-					 &s->part_info.part);
-	if (IS_ERR(dbgfs_entry))
-		return PTR_ERR(dbgfs_entry);
-
-	return 0;
+	debugfs_create_u16("part", 0444, dbgfs_partinfo_dir,
+			   &s->part_info.part);
 }
 
-static int si4455_debugfs_clear(struct device *dev)
+static void si4455_debugfs_clear(struct device *dev)
 {
 	struct si4455_port *s = dev_get_drvdata(dev);
 
-	if (!IS_ERR_OR_NULL(s->dbgfs_dir))
-		debugfs_remove_recursive(s->dbgfs_dir);
-
-	return 0;
+	debugfs_remove_recursive(s->dbgfs_dir);
 }
-#else
-static int si4455_debugfs_init(struct device *dev)
-{
-	return 0;
-}
-
-static int si4455_debugfs_clear(struct device *dev)
-{
-	return 0;
-}
-#endif
 
 static int __maybe_unused si4455_suspend(struct device *dev)
 {
 	int ret;
 	struct si4455_port *s = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "%s\n", __func__);
+	mutex_lock(&s->mutex);
 	ret = si4455_cancel_tx(&s->port);
 	if (ret) {
+		mutex_unlock(&s->mutex);
 		dev_err(dev, "%s: si4455_cancel_tx error (%i)\n",
 			__func__, ret);
 		return ret;
 	}
 
-	mutex_lock(&s->mutex);
 	ret = si4455_change_state(&s->port, SI4455_CMD_CHANGE_STATE_STATE_SLEEP);
 	s->suspended = !ret;
 	mutex_unlock(&s->mutex);
@@ -1256,6 +1202,7 @@ static int __maybe_unused si4455_suspend(struct device *dev)
 			__func__, ret);
 		return ret;
 	}
+
 	return uart_suspend_port(&si4455_uart, &s->port);
 }
 
@@ -1264,7 +1211,6 @@ static int __maybe_unused si4455_resume(struct device *dev)
 	int ret;
 	struct si4455_port *s = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "%s\n", __func__);
 	ret = uart_resume_port(&si4455_uart, &s->port);
 	if (ret) {
 		dev_err(dev, "%s: uart_resume_port error (%i)\n",
@@ -1273,6 +1219,7 @@ static int __maybe_unused si4455_resume(struct device *dev)
 	}
 
 	s->suspended = false;
+	s->rx_stopped = false;
 
 	return si4455_do_work(&s->port);
 }
@@ -1452,7 +1399,6 @@ static int si4455_probe(struct device *dev,
 	const struct firmware *ez_fw = NULL;
 	int line;
 
-	dev_dbg(dev, "%s\n", __func__);
 	/* Alloc port structure */
 	s = devm_kzalloc(dev, sizeof(*s), GFP_KERNEL);
 	if (!s)
@@ -1534,7 +1480,6 @@ static int si4455_probe(struct device *dev,
 
 	si4455_s_power(dev, true);
 
-	//detect
 	ret = si4455_get_part_info(&s->port, &s->part_info);
 	dev_dbg(dev, "si4455_get_part_info() = %i\n", ret);
 	if (ret == 0) {
@@ -1579,7 +1524,7 @@ static int si4455_probe(struct device *dev,
 	INIT_WORK(&s->tx_work, si4455_tx_proc);
 	/* Initialize queue for start TX watchdog */
 	INIT_WORK(&s->tx_wd_work, si4455_tx_wd_proc);
-	/* Initialize queue for start TX watchdog */
+	/* Initialize queue for cts watchdog */
 	INIT_WORK(&s->cts_wd_work, si4455_cts_wd_proc);
 	/* Initialize timer for protecting and recovering tx_pending */
 	timer_setup(&s->tx_wd_timer, si4455_tx_wd_event, 0);
@@ -1602,18 +1547,12 @@ static int si4455_probe(struct device *dev,
 		goto out_uart;
 	}
 
-	ret = si4455_debugfs_init(dev);
-	if (ret) {
-		si4455_debugfs_clear(dev);
-		dev_err(dev, "si4455_debugfs_init error (%i)\n", ret);
-		goto out_uart;
-	}
+	si4455_debugfs_init(dev);
 
 	/* Setup interrupt */
 	ret = devm_request_threaded_irq(dev, irq, NULL, si4455_ist,
 					IRQF_ONESHOT | IRQF_SHARED,
 					dev_name(dev), s);
-
 	if (!ret)
 		return 0;
 

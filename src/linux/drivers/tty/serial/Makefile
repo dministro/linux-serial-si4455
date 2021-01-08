@@ -1,1 +1,3 @@
+CFLAGS_si4455.o += -DPORT_SI4455=122
+#CFLAGS_si4455.o += -DDEBUG
 obj-m := si4455.o
