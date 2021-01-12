@@ -99,7 +99,7 @@ Rules:
 ### 2.3. device
 
 The driver instances are comes up under `/dev` as
->/dev/ttySL`X`
+>/dev/ttySSi`X`
 
 , where `X` is the index of instance.
 
@@ -114,7 +114,7 @@ The si4455 driver uses configuration parameters and maintains statistics inside 
 **current_rssi**
 
 Path:
->/sys/class/tty/ttySL`X`/device/current_rssi
+>/sys/class/tty/ttySSi`X`/device/current_rssi
 
 Description:
 >Shows the latest rssi value measured by chip.<br>
@@ -123,7 +123,7 @@ To convert the value to dBm. See chapter *3.2.1. Received Signal Strength Indica
 **package_size**
 
 Path:
->/sys/class/tty/ttySL`X`/device/package_size
+>/sys/class/tty/ttySSi`X`/device/package_size
 
 Description:
 >Shows or stores the package size.<br>
@@ -133,7 +133,7 @@ Variable package size (package_size = 0)
 **rx_channel**
 
 Path:
->/sys/class/tty/ttySL`X`/device/rx_channel
+>/sys/class/tty/ttySSi`X`/device/rx_channel
 
 Description:
 >Shows or stores the receive channel index.<br>
@@ -142,7 +142,7 @@ The new value applied immediately.
 **tx_channel**
 
 Path:
->/sys/class/tty/ttySL`X`/device/tx_channel
+>/sys/class/tty/ttySSi`X`/device/tx_channel
 
 Description:
 >Shows or stores transmit channel index.<br>
@@ -151,7 +151,7 @@ The new value will be used on next data transmit.
 **tx_timeout**
 
 Path:
->/sys/class/tty/ttySL`X`/device/tx_timeout
+>/sys/class/tty/ttySSi`X`/device/tx_timeout
 
 Description:
 >Shows or stores the transmit timeout.<br>
@@ -334,13 +334,13 @@ If probe success after boot, dmesg:<br>
 ![dmesg](img/rpi_si4455_dmesg.png)
 
 The new devices are under `/dev`:<br>
-![ls -la /dev | grep ttySL](img/rpi_si4455_dev.png)
+![ls -la /dev | grep ttySSi](img/rpi_si4455_dev.png)
 
 If the new devices are visible under `/dev`, they are ready to use as a serial device.<br>
 Testing with [minicom](https://linux.die.net/man/1/minicom) or [tio](http://tio.github.io/):
 
->tio -f none /dev/ttySL0<br>
-![tio -f none /dev/ttySL0](img/rpi_si4455_tio.png)
+>tio -f none /dev/ttySSi0<br>
+![tio -f none /dev/ttySSi0](img/rpi_si4455_tio.png)
 
->minicom -c on -D /dev/ttySL1<br>
-![minicom -c on -D /dev/ttySL1](img/rpi_si4455_minicom.png)
+>minicom -c on -D /dev/ttySSi1<br>
+![minicom -c on -D /dev/ttySSi1](img/rpi_si4455_minicom.png)

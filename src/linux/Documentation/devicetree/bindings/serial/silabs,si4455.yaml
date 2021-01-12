@@ -58,10 +58,9 @@ properties:
     maximum: 255
     minimum: 0
 
-  silabs,tx-timeout:
+  silabs,tx-timeout-ms:
     description:
       Radio transmit timeout(ms)
-    $ref: /schemas/types.yaml#/definitions/uint32
     maximum: 1000
     minimum: 1
 

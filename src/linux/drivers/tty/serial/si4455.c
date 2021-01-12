@@ -25,7 +25,7 @@
 #include <linux/debugfs.h>
 
 #define SI4455_NAME						"Si4455"
-#define SI4455_DEV_NAME						"ttySL"
+#define SI4455_DEV_NAME						"ttySSi"
 #define SI4455_UART_NRMAX					16
 #define SI4455_FIFO_SIZE					64
 
@@ -1451,10 +1451,10 @@ static int si4455_probe(struct device *dev,
 	}
 	s->rx_channel = be32_to_cpup(of_ptr);
 
-	of_ptr = of_get_property(dev->of_node, "silabs,tx-timeout", NULL);
+	of_ptr = of_get_property(dev->of_node, "silabs,tx-timeout-ms", NULL);
 	if (IS_ERR_OR_NULL(of_ptr)) {
 		s->tx_wd_timeout = 100;
-		dev_warn(dev, "dt silabs,tx-timeout property not present\n");
+		dev_warn(dev, "dt silabs,tx-timeout-ms property not present\n");
 	} else {
 		s->tx_wd_timeout = be32_to_cpup(of_ptr);
 	}
